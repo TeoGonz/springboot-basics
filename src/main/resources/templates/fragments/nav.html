@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="es">
+<body>
+<nav th:fragment="nav" class="navbar navbar-dark bg-dark">
+    <div class="container">
+        <a class="navbar-brand" href="/public" th:text="#{nav.brand}">Demo Seguridad</a>
+        <div class="btn-group btn-group-sm" role="group" th:aria-label="#{nav.language}">
+            <a class="btn btn-outline-light" th:href="@{''(lang='es')}" th:text="#{lang.es}">Español</a>
+            <a class="btn btn-outline-light" th:href="@{''(lang='en')}" th:text="#{lang.en}">English</a>
+            <a class="btn btn-outline-light" th:href="@{''(lang='pt')}" th:text="#{lang.pt}">Português</a>
+        </div>
+    </div>
+</nav>
+</body>
+</html>
