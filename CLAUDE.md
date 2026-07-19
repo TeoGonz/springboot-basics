@@ -11,23 +11,28 @@ springboot_java_project/
 ├── pom.xml                     # Maven config, deps, Java 17 / Spring Boot 4.1.0
 ├── mvnw, mvnw.cmd              # Maven wrapper
 ├── .mvn/wrapper/               # wrapper properties
+├── .gitattributes, .gitignore  # git config
 ├── HELP.md                     # Spring Initializr help (gitignored)
 ├── CLAUDE.md                   # this file
+├── .claude/design/prototypes/  # static HTML mockups (design reference, not built/served)
+│   ├── public_page.html            # bitácora landing prototype
+│   └── blog-internacionalization.html  # entry-detail prototype (not yet implemented)
 └── src/
     ├── main/
     │   ├── java/com/example/demo/
     │   │   ├── DemoApplication.java          # @SpringBootApplication entry point
     │   │   ├── config/SecurityConfig.java    # filter chain + in-memory users
     │   │   ├── config/WebConfig.java         # i18n: LocaleResolver + lang interceptor
-    │   │   └── controller/PageController.java# GET routes -> template names
+    │   │   ├── model/Post.java               # bitácora entry (static now, API later)
+    │   │   └── controller/PageController.java# GET routes -> template names; feeds POSTS to /public
     │   └── resources/
     │       ├── application.properties        # app config + messages basename/encoding
     │       ├── messages.properties           # i18n default (es)
     │       ├── messages_en.properties        # i18n English
     │       ├── messages_pt.properties        # i18n Português
     │       └── templates/                     # Thymeleaf views
-    │           ├── fragments/nav.html         # navbar + language switcher (reusable)
-    │           ├── public.html
+    │           ├── fragments/nav.html         # two navbars: publicNav (bitácora) + appNav (login + private)
+    │           ├── public.html               # bitácora landing (hero + entries + about)
     │           ├── login.html
     │           ├── user.html
     │           ├── admin.html
@@ -54,7 +59,9 @@ Spring MVC + Thymeleaf app demonstrating role-based access control. Three moving
 
 - `config/SecurityConfig.java` — the core. Defines the `SecurityFilterChain` (URL → role rules), form login, logout, and 403 handling. Also holds an **in-memory** user store (`InMemoryUserDetailsManager`) with hardcoded users: `admin`/`admin123` (ROLE_ADMIN), `user`/`user123` (ROLE_USER). Passwords BCrypt-encoded. No database.
 - `controller/PageController.java` — thin `@Controller`, maps each GET route to a Thymeleaf template name. No business logic.
-- `resources/templates/*.html` — Thymeleaf views: `public`, `user`, `admin`, `login`, `403`. All include the shared navbar via `th:replace="~{fragments/nav :: nav}"`.
+- `resources/templates/*.html` — Thymeleaf views: `public`, `user`, `admin`, `login`, `403`.
+- **Public page (`public.html`) is the *bitácora* (learning log)** — a blog landing: hero + grid of weekly entries + "Acerca de" + footer. Entries come from `POSTS` (a static `List<Post>`) in `PageController`, rendered with `th:each` and message keys; **next iteration these move to an API** — keep the render data-driven. `Post` fields carry i18n *keys* (`tituloKey`/`resumenKey`), resolved in the view with `#{__${p.tituloKey}__}`. Localized dates via `#temporals.format(..., #locale)`.
+- **Two navbars** in `fragments/nav.html`: `publicNav` (bitácora: brand + Entradas/Acerca + login + language **dropdown** at the end; needs Bootstrap JS) and `appNav` (login + private/authenticated: brand + language button group). Public page uses `publicNav`; `login`/`user`/`admin`/`403` use `appNav`.
 - `config/WebConfig.java` — i18n. `SessionLocaleResolver` (default `es`) + `LocaleChangeInterceptor` on param `lang`. UI strings live in `messages[_en|_pt].properties`; templates read them with `#{key}`.
 
 Access rules (SecurityConfig): `/public` open, `/user` needs USER or ADMIN, `/admin` needs ADMIN, everything else authenticated. Login success redirects to `/user`; denied access hits `/403`.
@@ -64,8 +71,8 @@ To add a page: add route in `PageController`, template in `templates/`, and an a
 ## Templates conventions
 
 - UI text is **i18n**: no hardcoded strings — use `#{key}` and add the key to all three `messages*.properties`. Default locale `es`; switch with `?lang=es|en|pt`.
-- Styling via **Bootstrap 5.3.3 CDN** link in each `<head>` (no local static assets, no build step for CSS). CSS only — no Bootstrap JS bundle, so avoid JS-dependent components (dropdowns/modals).
-- Shared navbar in `fragments/nav.html`; pull into a page with `<nav th:replace="~{fragments/nav :: nav}"></nav>`. Language switcher links `?lang=xx` (handled by `LocaleChangeInterceptor`).
+- Styling via **Bootstrap 5.3.3 CDN** link in each `<head>` (no local static assets, no build step for CSS). Every page loads `bootstrap.bundle.min.js` + `bootstrap-icons` CDN because both navbars (`publicNav` collapse+dropdown, `appNav` language dropdown) use JS components and the `bi-translate` icon. `public.html` also keeps its custom look in an inline `<style>` block. Any page using a JS component (dropdown/collapse/modal) must load the Bootstrap JS bundle.
+- Shared navbar in `fragments/nav.html`; pull into a page with `<nav th:replace="~{fragments/nav :: appNav}"></nav>` (or `:: publicNav`). Language switcher links `?lang=xx` (handled by `LocaleChangeInterceptor`).
 - `thymeleaf-extras-springsecurity6`: `sec:authentication="name"` shows current user, `sec:authentication="principal.authorities"` shows roles.
 - **Logout is a POST form** to `@{/logout}` (CSRF-protected by default) — not a plain link.
 - `login.html` reads `${param.error}` / `${param.logout}` query flags to show alerts (wired by SecurityConfig's `defaultSuccessUrl` / `logoutSuccessUrl`).
