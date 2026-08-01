@@ -33,3 +33,9 @@ build/
 .vscode/
 .DS_Store
 .claude
+
+### Configuración local ###
+# Credenciales (contraseña de aplicación del correo, secreto del JWT). La
+# plantilla sí se versiona; el archivo con los valores reales, jamás.
+.env
+!.env.example

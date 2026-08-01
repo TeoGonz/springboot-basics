@@ -18,7 +18,8 @@ springboot_java_project/
 ├── CLAUDE.md                   # this file
 ├── docker/                     # containerization (backend image + Postgres + Mailpit)
 │   ├── Dockerfile                  # multi-stage: maven build -> temurin JRE runtime, non-root
-│   └── docker-compose.yml          # services: postgres (healthcheck+volume), mailpit, backend (built from ..)
+│   ├── docker-compose.yml          # services: postgres (healthcheck+volume), mailpit, backend (built from ..)
+│   └── .env.example                # template for docker/.env (gitignored: SMTP creds, JWT secret)
 └── src/
     ├── main/
     │   ├── java/com/example/demo/
@@ -92,6 +93,7 @@ Stateless Spring REST API demonstrating role-based access control. Moving parts:
 - `web/ApiExceptionHandler` — every error leaves as `{status, error, message[, fields]}`. `error` is a stable code (`BAD_CREDENTIALS`, `EMAIL_TAKEN`, `EXPIRED_TOKEN`…) that the front maps to its own translated text. Controllers throw `ApiException` and never shape responses.
 - `controller/MeController.java` — `GET /api/me`, the authenticated principal's `username`, `enabled` and `roles`. Never exposes the password hash.
 - `docker/` — containerization. `Dockerfile` is multi-stage (Maven build → `eclipse-temurin:17-jre` runtime, non-root `spring` user); it **must** build with `-DskipTests` since `contextLoads` needs a live DB. `docker-compose.yml` runs `postgres:16` (named volume `pgdata`, `pg_isready` healthcheck), `mailpit` (SMTP 1025, inbox 8025) and `backend`, whose build `context` is the **repo root** (`..`) — that's why `.dockerignore` sits at the root. `depends_on: service_healthy` keeps the app from starting before the DB accepts connections; env vars point the datasource at host `postgres` and the mailer at `mailpit`.
+- **Mail transport is configuration, never code.** Every `spring.mail.*` value reads an env var whose default describes Mailpit, so a fresh clone boots and the whole recovery flow works with no account anywhere; `docker/.env` (gitignored, template in `docker/.env.example`) switches the same build to a real provider — Gmail needs `MAIL_SMTP_AUTH`/`MAIL_SMTP_STARTTLS` true on port 587, an **app password**, and `APP_MAIL_FROM` equal to `MAIL_USERNAME` because Gmail only sends as the authenticated account. Compose declares these as `${VAR:-<mailpit default>}`, so an absent `.env` changes nothing. Deliberately no Spring profile: env vars are already how this project expresses environment differences. SMTP timeouts are set because `forgot-password` needs no token and the send is `@Async` — a stalling server would otherwise pin threads on an anonymous request.
 
 Access rules (SecurityConfig): `/api/auth/**` open (register, login and password recovery must work without a token), `/api/admin/**` needs ADMIN, everything else authenticated. There are no view routes: `/public`, `/login`, `/user`, `/admin` and `/403` are gone — an authenticated request to any of them returns 404, an anonymous one 401.
 

@@ -66,9 +66,18 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/bitacora
       SPRING_DATASOURCE_USERNAME: bitacora
       SPRING_DATASOURCE_PASSWORD: bitacora
-      # SMTP de desarrollo: nada sale de la máquina.
-      MAIL_HOST: mailpit
-      MAIL_PORT: 1025
+      # SMTP. Por defecto Mailpit: nada sale de la máquina. Para enviar a un buzón
+      # real se copia .env.example a docker/.env y se rellena; compose lee ese
+      # archivo solo (está gitignorado, ahí van las credenciales).
+      MAIL_HOST: ${MAIL_HOST:-mailpit}
+      MAIL_PORT: ${MAIL_PORT:-1025}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      MAIL_SMTP_AUTH: ${MAIL_SMTP_AUTH:-false}
+      MAIL_SMTP_STARTTLS: ${MAIL_SMTP_STARTTLS:-false}
+      # Gmail solo deja enviar como la cuenta autenticada: si se cambia MAIL_USERNAME
+      # hay que cambiar esto al mismo valor, o el correo se rechaza.
+      APP_MAIL_FROM: ${APP_MAIL_FROM:-bitacora@localhost}
       # El enlace del correo lo abre el navegador del usuario, así que apunta al
       # front en el host, no a un nombre de servicio de la red de compose.
       APP_FRONTEND_BASE_URL: ${APP_FRONTEND_BASE_URL:-http://localhost:3000}

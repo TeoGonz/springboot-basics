@@ -141,6 +141,47 @@ Tampoco hay CORS configurado, y no es un olvido: al front lo sirve Next, que lla
 
 En la base de datos solo se guarda el **hash SHA-256** del token: quien lea la tabla no puede reconstruir el enlace que se envió.
 
+#### Dónde llega el correo
+
+Por defecto, **a Mailpit y a ningún sitio más**. Mailpit es un buzón trampa: acepta cualquier destinatario y no entrega nada fuera de la máquina, así que pedir veinte enlaces de prueba no molesta a nadie. Se lee en **http://localhost:8025**, y si prefieres la terminal:
+
+```bash
+curl -s 'localhost:8025/api/v1/messages?limit=1'    # lista
+curl -s 'localhost:8025/api/v1/message/<ID>'        # cuerpo, con el enlace
+```
+
+Un correo enviado a tu dirección real **no aparecerá en tu bandeja**: está en Mailpit. Eso es lo esperado, no un fallo.
+
+#### Enviar a un buzón real
+
+Es solo configuración; el código no cambia.
+
+```bash
+cp docker/.env.example docker/.env      # docker/.env está gitignorado
+```
+
+Y en él, el bloque de Gmail:
+
+```dotenv
+MAIL_HOST=smtp.gmail.com
+MAIL_PORT=587
+MAIL_USERNAME=tu.cuenta@gmail.com
+MAIL_PASSWORD=xxxxxxxxxxxxxxxx
+MAIL_SMTP_AUTH=true
+MAIL_SMTP_STARTTLS=true
+APP_MAIL_FROM=tu.cuenta@gmail.com
+```
+
+Después, `docker compose -f docker/docker-compose.yml up -d --build backend`.
+
+Tres detalles que hacen fallar el envío si se pasan por alto:
+
+- `MAIL_PASSWORD` es una **contraseña de aplicación**, no la de tu cuenta. Se genera en [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) y exige tener activada la verificación en dos pasos. Google la muestra en cuatro bloques de cuatro; los espacios son decorativos, se pega seguida.
+- `APP_MAIL_FROM` tiene que ser **la misma dirección** que `MAIL_USERNAME`: Gmail solo permite enviar como la cuenta autenticada.
+- La contraseña de aplicación permite enviar correo en tu nombre. Va en `docker/.env`, que git ignora, y **no debe acabar en un archivo versionado**. Si alguna vez se filtra, hay que revocarla en Google: borrarla del archivo no la desactiva.
+
+Si el envío falla, el usuario ya recibió su 202 (por diseño), así que el motivo está solo en el log: `docker compose -f docker/docker-compose.yml logs backend | grep -i mail`. Un `MailAuthenticationException` es contraseña de aplicación incorrecta o dos pasos sin activar.
+
 ### Errores
 
 Todos comparten la misma forma, con un código estable pensado para que el front elija el texto traducido:
@@ -196,11 +237,16 @@ Valores por defecto en `src/main/resources/application.properties`, sobreescribi
 | `APP_JWT_EXPIRATION_MS` | `3600000` | Vida del token (1 h) |
 | `APP_PASSWORD_RESET_EXPIRATION_MS` | `1800000` | Vida del enlace de recuperación (30 min) |
 | `APP_FRONTEND_BASE_URL` | `http://localhost:3000` | Base del enlace que se envía por correo |
-| `APP_MAIL_FROM` | `bitacora@localhost` | Remitente de los correos |
+| `APP_MAIL_FROM` | `bitacora@localhost` | Remitente de los correos; con Gmail, igual a `MAIL_USERNAME` |
 | `MAIL_HOST` / `MAIL_PORT` | `localhost` / `1025` | Servidor SMTP (en Compose, `mailpit:1025`) |
+| `MAIL_USERNAME` / `MAIL_PASSWORD` | vacíos | Credenciales SMTP; Mailpit no las pide |
+| `MAIL_SMTP_AUTH` | `false` | `true` con un servidor real |
+| `MAIL_SMTP_STARTTLS` | `false` | `true` con un servidor real (Gmail: puerto 587) |
 | `MAILPIT_UI_PORT` | `8025` | Puerto del host para la bandeja web (solo Compose) |
 
 Dentro de Compose el host de la BD es `postgres` y el del correo `mailpit` (nombres de servicio), no `localhost`; el `docker-compose.yml` ya inyecta esas variables.
+
+Para no repetirlas en cada comando, se copia `docker/.env.example` a `docker/.env` y se rellena: Compose lee ese archivo solo. Está **gitignorado** porque ahí viven las credenciales; la plantilla sí se versiona. Sin `docker/.env` el proyecto funciona igual, con los valores por defecto.
 
 > El secreto JWT por defecto está en el repositorio: sirve para arrancar en local y nada más. En cualquier despliegue real va en `APP_JWT_SECRET`, fuera del código.
 
