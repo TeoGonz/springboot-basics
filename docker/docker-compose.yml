@@ -1,0 +1,61 @@
+# =====================================================================
+# Ecosistema completo: base de datos + backend compilado desde el fuente.
+#
+#   docker compose -f docker/docker-compose.yml up --build     # todo
+#   docker compose -f docker/docker-compose.yml up postgres    # solo BD
+#
+# Con "solo BD" se programa cómodo: el backend corre en el host con
+# ./mvnw spring-boot:run y se conecta a localhost:5432.
+# =====================================================================
+
+name: bitacora
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: bitacora-postgres
+    environment:
+      POSTGRES_DB: bitacora
+      POSTGRES_USER: bitacora
+      POSTGRES_PASSWORD: bitacora
+    ports:
+      # Publicado para poder inspeccionar la BD desde el host (psql, DBeaver).
+      # El backend dentro de compose no lo necesita: se conecta por la red interna.
+      # El puerto del host es configurable porque 5432 suele estar ocupado por
+      # otro Postgres local: POSTGRES_HOST_PORT=5433 docker compose ... up
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      # Volumen nombrado: los datos sobreviven a `down` y a recrear el contenedor.
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Postgres acepta conexiones bastante después de que arranca el contenedor;
+      # sin este chequeo el backend intentaría conectarse demasiado pronto.
+      test: ["CMD-SHELL", "pg_isready -U bitacora -d bitacora"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  backend:
+    build:
+      # Context = raíz del repo (ahí están pom.xml y src/), no esta carpeta.
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: bitacora-backend
+    depends_on:
+      postgres:
+        # Espera a que el healthcheck pase, no solo a que el contenedor exista.
+        condition: service_healthy
+    environment:
+      # Sobreescriben los valores de application.properties. El host es
+      # "postgres" (nombre del servicio en la red de compose), no localhost.
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/bitacora
+      SPRING_DATASOURCE_USERNAME: bitacora
+      SPRING_DATASOURCE_PASSWORD: bitacora
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

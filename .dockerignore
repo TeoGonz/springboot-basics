@@ -1,0 +1,26 @@
+# Qué NO se manda al build de Docker. Es relativo a la raíz del repo,
+# que es el build context definido en docker/docker-compose.yml.
+# Menos context = build más rápido y sin artefactos locales del host
+# (target/ se compila dentro de la imagen, no se copia desde afuera).
+
+target/
+.git/
+.gitignore
+.gitattributes
+
+# Notas de trabajo y config de herramientas
+.claude/
+HELP.md
+README.md
+CLAUDE.md
+
+# Docker: el Dockerfile no necesita copiarse a sí mismo
+docker/
+
+# IDE / SO
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+.DS_Store
