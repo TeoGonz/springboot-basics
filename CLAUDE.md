@@ -23,29 +23,19 @@ springboot_java_project/
     ├── main/
     │   ├── java/com/example/demo/
     │   │   ├── DemoApplication.java          # @SpringBootApplication entry point
-    │   │   ├── config/SecurityConfig.java    # filter chain (users now from Postgres via JpaUserDetailsService)
-    │   │   ├── config/WebConfig.java         # i18n: LocaleResolver + lang interceptor
+    │   │   ├── config/SecurityConfig.java    # stateless filter chain + HTTP Basic (temporary, JWT next)
     │   │   ├── config/DataSeeder.java        # seeds admin/user into Postgres if empty (idempotent)
-    │   │   ├── model/Post.java               # bitácora entry (static now, API later)
     │   │   ├── entity/User.java, entity/Role.java  # JPA user + role enum (users table + user_roles)
     │   │   ├── repository/UserRepository.java      # Spring Data JPA repo (findByUsername, existsBy…)
     │   │   ├── service/JpaUserDetailsService.java   # UserDetailsService backed by Postgres
-    │   │   └── controller/PageController.java# GET routes -> template names; feeds POSTS to /public
+    │   │   └── controller/MeController.java  # GET /api/me -> username, enabled, roles
     │   └── resources/
-    │       ├── application.properties        # app config + messages basename/encoding
-    │       ├── messages.properties           # i18n default (es)
-    │       ├── messages_en.properties        # i18n English
-    │       ├── messages_pt.properties        # i18n Português
-    │       └── templates/                     # Thymeleaf views
-    │           ├── fragments/nav.html         # two navbars: publicNav (bitácora) + appNav (login + private)
-    │           ├── public.html               # bitácora landing (hero + entries + about)
-    │           ├── login.html
-    │           ├── user.html
-    │           ├── admin.html
-    │           └── 403.html
+    │       └── application.properties        # datasource + JPA config (env-overridable)
     └── test/java/com/example/demo/
         └── DemoApplicationTests.java         # contextLoads smoke test
 ```
+
+The frontend is **not** in this repository: it lives in the sibling Next.js project `front-react-project/`, with its own git. This app serves JSON only — no templates, no static assets, no i18n.
 
 ## Commands
 
@@ -64,31 +54,32 @@ docker exec -it bitacora-postgres psql -U bitacora -d bitacora
 ./mvnw test -Dtest=DemoApplicationTests#methodName   # run single test
 ./mvnw package                  # build jar to target/
 ./mvnw clean                    # wipe target/
+
+# API smoke check (HTTP Basic, seeded users)
+curl -i localhost:8080/api/me                     # 401
+curl -u user:user123 localhost:8080/api/me        # 200, ROLE_USER
+curl -u admin:admin123 localhost:8080/api/me      # 200, ROLE_ADMIN + ROLE_USER
 ```
 
 No linter configured. Java 17, Spring Boot 4.1.0. Only test is `DemoApplicationTests.contextLoads` (smoke test, no assertions). It boots the full context, so **`./mvnw test` needs a live Postgres**; builds without a DB use `./mvnw package -DskipTests`.
 
 ## Architecture
 
-Spring MVC + Thymeleaf app demonstrating role-based access control. Three moving parts:
+Stateless Spring REST API demonstrating role-based access control. Moving parts:
 
-- `config/SecurityConfig.java` — the core. Defines the `SecurityFilterChain` (URL → role rules), form login, logout, and 403 handling. Users now come from **Postgres via JPA**: `service/JpaUserDetailsService` (Spring auto-detects it as the `UserDetailsService`) loads `entity/User` rows; `config/DataSeeder` seeds `admin`/`admin123` (ROLE_ADMIN+USER) and `user`/`user123` (ROLE_USER) on first boot if the table is empty. Passwords BCrypt-encoded. Datasource config in `application.properties` (env-overridable, so the same build works locally and inside Docker where the DB host is the compose service name). Postgres itself is not started by the app — see `README.md`.
-- `controller/PageController.java` — thin `@Controller`, maps each GET route to a Thymeleaf template name. No business logic.
-- `resources/templates/*.html` — Thymeleaf views: `public`, `user`, `admin`, `login`, `403`.
-- **Public page (`public.html`) is the *bitácora* (learning log)** — a blog landing: hero + grid of weekly entries + "Acerca de" + footer. Entries come from `POSTS` (a static `List<Post>`) in `PageController`, rendered with `th:each` and message keys; **next iteration these move to an API** — keep the render data-driven. `Post` fields carry i18n *keys* (`tituloKey`/`resumenKey`), resolved in the view with `#{__${p.tituloKey}__}`. Localized dates via `#temporals.format(..., #locale)`.
-- **Two navbars** in `fragments/nav.html`: `publicNav` (bitácora: brand + Entradas/Acerca + login + language **dropdown** at the end; needs Bootstrap JS) and `appNav` (login + private/authenticated: brand + language button group). Public page uses `publicNav`; `login`/`user`/`admin`/`403` use `appNav`.
-- `config/WebConfig.java` — i18n. `SessionLocaleResolver` (default `es`) + `LocaleChangeInterceptor` on param `lang`. UI strings live in `messages[_en|_pt].properties`; templates read them with `#{key}`.
+- `config/SecurityConfig.java` — the core. Defines the `SecurityFilterChain`: CSRF disabled, `SessionCreationPolicy.STATELESS`, URL → role rules, and HTTP Basic. Users come from **Postgres via JPA**: `service/JpaUserDetailsService` (Spring auto-detects it as the `UserDetailsService`) loads `entity/User` rows; `config/DataSeeder` seeds `admin`/`admin123` (ROLE_ADMIN+USER) and `user`/`user123` (ROLE_USER) on first boot if the table is empty. Passwords BCrypt-encoded. Datasource config in `application.properties` (env-overridable, so the same build works locally and inside Docker where the DB host is the compose service name). Postgres itself is not started by the app — see `README.md`.
+- **HTTP Basic is temporary.** It exists so the API is callable from Postman/curl; the JWT filter (spec backend 02) replaces it. CSRF stays disabled only while the API is cookie-less — bringing back cookie auth means bringing back CSRF.
+- `controller/MeController.java` — `GET /api/me`, the authenticated principal's `username`, `enabled` and `roles`. Never exposes the password hash.
 - `docker/` — containerization. `Dockerfile` is multi-stage (Maven build → `eclipse-temurin:17-jre` runtime, non-root `spring` user); it **must** build with `-DskipTests` since `contextLoads` needs a live DB. `docker-compose.yml` runs `postgres:16` (named volume `pgdata`, `pg_isready` healthcheck) plus `backend`, whose build `context` is the **repo root** (`..`) — that's why `.dockerignore` sits at the root. `depends_on: service_healthy` keeps the app from starting before the DB accepts connections; datasource env vars point at host `postgres` (the service name).
 
-Access rules (SecurityConfig): `/public` open, `/user` needs USER or ADMIN, `/admin` needs ADMIN, everything else authenticated. Login success redirects to `/user`; denied access hits `/403`.
+Access rules (SecurityConfig): `/api/auth/**` open (reserved for the JWT endpoints), `/api/admin/**` needs ADMIN, everything else authenticated. There are no view routes: `/public`, `/login`, `/user`, `/admin` and `/403` are gone — an authenticated request to any of them returns 404, an anonymous one 401.
 
-To add a page: add route in `PageController`, template in `templates/`, and an authorization rule in `SecurityConfig` if it needs protection.
+To add an endpoint: `@RestController` under `controller/`, path prefixed `/api/`, plus an authorization rule in `SecurityConfig` if the default (authenticated) is not what you want.
 
-## Templates conventions
+## API conventions
 
-- UI text is **i18n**: no hardcoded strings — use `#{key}` and add the key to all three `messages*.properties`. Default locale `es`; switch with `?lang=es|en|pt`.
-- Styling via **Bootstrap 5.3.3 CDN** link in each `<head>` (no local static assets, no build step for CSS). Every page loads `bootstrap.bundle.min.js` + `bootstrap-icons` CDN because both navbars (`publicNav` collapse+dropdown, `appNav` language dropdown) use JS components and the `bi-translate` icon. `public.html` also keeps its custom look in an inline `<style>` block. Any page using a JS component (dropdown/collapse/modal) must load the Bootstrap JS bundle.
-- Shared navbar in `fragments/nav.html`; pull into a page with `<nav th:replace="~{fragments/nav :: appNav}"></nav>` (or `:: publicNav`). Language switcher links `?lang=xx` (handled by `LocaleChangeInterceptor`).
-- `thymeleaf-extras-springsecurity6`: `sec:authentication="name"` shows current user, `sec:authentication="principal.authorities"` shows roles.
-- **Logout is a POST form** to `@{/logout}` (CSRF-protected by default) — not a plain link.
-- `login.html` reads `${param.error}` / `${param.logout}` query flags to show alerts (wired by SecurityConfig's `defaultSuccessUrl` / `logoutSuccessUrl`).
+- JSON in, JSON out. No HTML, no redirects, no cookies — every response must make sense to a Postman/curl caller.
+- Paths live under `/api/`. Role-restricted areas get their own prefix (`/api/admin/**`) so the rule stays in the filter chain, not scattered in annotations.
+- Never serialize an `entity/` object straight out: expose a `record` DTO (see `MeController.MeResponse`) so password hashes and internal fields cannot leak.
+- The API has no i18n. User-facing text is the frontend's job; messages in responses are for developers.
+- CORS is not configured yet: Next renders statically and makes no cross-origin call. It gets added (`http://localhost:3000`) when the frontend starts consuming the API.

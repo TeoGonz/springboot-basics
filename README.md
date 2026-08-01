@@ -1,8 +1,10 @@
 # Bitácora del curso — Backend
 
-Aplicación **Spring Boot 4.1** (Java 17) que demuestra control de acceso por roles. Incluye una app web **Thymeleaf** (bitácora + login por sesión) y, en construcción, una **API REST con autenticación JWT** respaldada por **Postgres**.
+**API REST** en **Spring Boot 4.1** (Java 17) que demuestra control de acceso por roles, respaldada por **Postgres**.
 
-> Los usuarios ya **no** son in-memory: se persisten en Postgres vía JPA. Todo el ecosistema (backend + base de datos) se levanta con **Docker Compose**: un solo comando compila la app y arranca Postgres.
+> Esta aplicación **no sirve páginas**: solo responde JSON y se prueba con Postman o `curl`. El frontend es un proyecto Next.js aparte (`front-react-project/`, repositorio hermano).
+
+> Los usuarios se persisten en Postgres vía JPA. Todo el ecosistema (backend + base de datos) se levanta con **Docker Compose**: un solo comando compila la app y arranca Postgres.
 
 ## Stack
 
@@ -10,10 +12,8 @@ Aplicación **Spring Boot 4.1** (Java 17) que demuestra control de acceso por ro
 |---|---|
 | Lenguaje / build | Java 17, Maven (wrapper `./mvnw`) |
 | Framework | Spring Boot 4.1.0 (Web MVC, Security 6, Data JPA, Validation) |
-| Vistas | Thymeleaf + Bootstrap 5.3.3 (CDN) |
-| i18n | `messages*.properties` (es/en/pt), switch con `?lang=` |
 | Base de datos | PostgreSQL 16 |
-| Auth | Form login por sesión (web) · JWT stateless para `/api/**` *(en progreso)* |
+| Auth | HTTP Basic *(provisional)* · JWT stateless *(en progreso)* |
 
 ## Requisitos
 
@@ -72,9 +72,13 @@ Funciona sin configurar nada: los valores por defecto apuntan a `localhost:5432`
 
 ### Verificar
 
-- **http://localhost:8080/public** — la bitácora (pública).
-- **http://localhost:8080/login** — entra con un usuario de demo.
-- Inspeccionar la BD: `docker exec -it bitacora-postgres psql -U bitacora -d bitacora`
+```bash
+curl -i localhost:8080/api/me                  # 401: sin credenciales
+curl -u user:user123 localhost:8080/api/me     # 200: {"username":"user","enabled":true,"roles":["ROLE_USER"]}
+curl -u admin:admin123 localhost:8080/api/me   # 200: ROLE_ADMIN + ROLE_USER
+```
+
+Inspeccionar la BD: `docker exec -it bitacora-postgres psql -U bitacora -d bitacora`
 
 ## Usuarios de demo (seed)
 
@@ -83,26 +87,24 @@ Funciona sin configurar nada: los valores por defecto apuntan a `localhost:5432`
 | `admin` | `admin123` | `ROLE_ADMIN`, `ROLE_USER` |
 | `user`  | `user123`  | `ROLE_USER` |
 
-## Rutas web (Thymeleaf)
-
-| Ruta | Acceso | Descripción |
-|---|---|---|
-| `/public` | público | Bitácora (hero + entradas + acerca de) |
-| `/login` | público | Formulario de login |
-| `/user` | `USER` o `ADMIN` | Zona de usuario |
-| `/admin` | `ADMIN` | Zona de administración |
-| `/403` | — | Acceso denegado |
-
-Cambia idioma con `?lang=es|en|pt`.
-
-## API REST *(en progreso — spec backend 02)*
+## API REST
 
 | Método | Ruta | Acceso | Estado |
 |---|---|---|---|
+| GET | `/api/me` | autenticado | ✅ disponible |
 | POST | `/api/auth/register` | público | ⏳ pendiente |
 | POST | `/api/auth/login` | público | ⏳ pendiente |
-| GET | `/api/me` | autenticado (JWT) | ⏳ pendiente |
 | GET | `/api/posts` | público | ⏳ pendiente |
+
+Reglas de acceso: `/api/auth/**` es público (reservado para los endpoints JWT), `/api/admin/**` exige `ROLE_ADMIN`, y todo lo demás requiere autenticación.
+
+### Autenticación
+
+Hoy la API usa **HTTP Basic** sobre una cadena *stateless* (sin sesión, sin cookies, CSRF desactivado). Es **provisional**: sirve para probar desde Postman mientras llega el JWT (spec backend 02), que lo sustituye. Basic envía las credenciales en cada petición codificadas en base64, así que solo es aceptable en desarrollo local.
+
+En Postman: pestaña *Authorization* → tipo *Basic Auth* → usuario y contraseña de la tabla de arriba.
+
+No quedan rutas web: `/public`, `/login`, `/user`, `/admin` y `/403` ya no existen. Una petición autenticada a cualquiera de ellas devuelve 404; una anónima, 401.
 
 ## Comandos
 
@@ -143,11 +145,16 @@ SPRING_DATASOURCE_PASSWORD=mipass \
 ./mvnw spring-boot:run
 ```
 
+## Frontend
+
+Vive en el repositorio hermano **`front-react-project/`** (Next.js 16 + Tailwind). Se levanta aparte con `npm run dev` (http://localhost:3000) y hoy es estático: no consume esta API todavía.
+
 ## Estructura y hoja de ruta
 
 - Código y arquitectura: ver [`CLAUDE.md`](./CLAUDE.md).
-- **Estado actual:** usuarios en Postgres vía JPA y ecosistema dockerizado; el front sigue siendo Thymeleaf con form login.
+- **Estado actual:** API stateless con usuarios en Postgres y ecosistema dockerizado; el front salió del proyecto.
 - **Siguientes pasos:**
-  1. Autenticación JWT + API REST bajo `/api/**`, conviviendo con el form login actual.
-  2. Migración del front a Next.js consumiendo esa API (los templates Thymeleaf se mantienen hasta entonces).
-  3. Perfil de test (H2 o Testcontainers) para que `./mvnw test` no dependa de un Postgres externo.
+  1. Autenticación JWT (`/api/auth/**`) sustituyendo el HTTP Basic provisional.
+  2. `GET /api/posts` para que la bitácora del front deje de ser estática.
+  3. CORS para `http://localhost:3000` cuando el front empiece a llamar a la API.
+  4. Perfil de test (H2 o Testcontainers) para que `./mvnw test` no dependa de un Postgres externo.
