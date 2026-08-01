@@ -13,17 +13,26 @@ springboot_java_project/
 ├── .mvn/wrapper/               # wrapper properties
 ├── .gitattributes, .gitignore  # git config
 ├── HELP.md                     # Spring Initializr help (gitignored)
+├── README.md                   # project overview + setup/startup steps (Postgres, run, users, endpoints)
 ├── CLAUDE.md                   # this file
 ├── .claude/design/prototypes/  # static HTML mockups (design reference, not built/served)
 │   ├── public_page.html            # bitácora landing prototype
 │   └── blog-internacionalization.html  # entry-detail prototype (not yet implemented)
+├── .claude/spec/               # work specs by domain (backend REST/JWT/Postgres/Docker, frontend Next migration)
+│   ├── README.md                   # domain index + global status
+│   ├── backend/                    # 00-overview, 01-database-postgres (done), 02-auth-jwt, 03-docker
+│   └── frontend/00-migration.md    # Next.js migration (documented only; front not touched yet)
 └── src/
     ├── main/
     │   ├── java/com/example/demo/
     │   │   ├── DemoApplication.java          # @SpringBootApplication entry point
-    │   │   ├── config/SecurityConfig.java    # filter chain + in-memory users
+    │   │   ├── config/SecurityConfig.java    # filter chain (users now from Postgres via JpaUserDetailsService)
     │   │   ├── config/WebConfig.java         # i18n: LocaleResolver + lang interceptor
+    │   │   ├── config/DataSeeder.java        # seeds admin/user into Postgres if empty (idempotent)
     │   │   ├── model/Post.java               # bitácora entry (static now, API later)
+    │   │   ├── entity/User.java, entity/Role.java  # JPA user + role enum (users table + user_roles)
+    │   │   ├── repository/UserRepository.java      # Spring Data JPA repo (findByUsername, existsBy…)
+    │   │   ├── service/JpaUserDetailsService.java   # UserDetailsService backed by Postgres
     │   │   └── controller/PageController.java# GET routes -> template names; feeds POSTS to /public
     │   └── resources/
     │       ├── application.properties        # app config + messages basename/encoding
@@ -57,7 +66,7 @@ No linter configured. Java 17, Spring Boot 4.1.0. Only test is `DemoApplicationT
 
 Spring MVC + Thymeleaf app demonstrating role-based access control. Three moving parts:
 
-- `config/SecurityConfig.java` — the core. Defines the `SecurityFilterChain` (URL → role rules), form login, logout, and 403 handling. Also holds an **in-memory** user store (`InMemoryUserDetailsManager`) with hardcoded users: `admin`/`admin123` (ROLE_ADMIN), `user`/`user123` (ROLE_USER). Passwords BCrypt-encoded. No database.
+- `config/SecurityConfig.java` — the core. Defines the `SecurityFilterChain` (URL → role rules), form login, logout, and 403 handling. Users now come from **Postgres via JPA**: `service/JpaUserDetailsService` (Spring auto-detects it as the `UserDetailsService`) loads `entity/User` rows; `config/DataSeeder` seeds `admin`/`admin123` (ROLE_ADMIN+USER) and `user`/`user123` (ROLE_USER) on first boot if the table is empty. Passwords BCrypt-encoded. Datasource config in `application.properties` (env-overridable). **The Postgres container is provided by the user.** See `.claude/spec/backend/` for the JWT/API/Docker roadmap.
 - `controller/PageController.java` — thin `@Controller`, maps each GET route to a Thymeleaf template name. No business logic.
 - `resources/templates/*.html` — Thymeleaf views: `public`, `user`, `admin`, `login`, `403`.
 - **Public page (`public.html`) is the *bitácora* (learning log)** — a blog landing: hero + grid of weekly entries + "Acerca de" + footer. Entries come from `POSTS` (a static `List<Post>`) in `PageController`, rendered with `th:each` and message keys; **next iteration these move to an API** — keep the render data-driven. `Post` fields carry i18n *keys* (`tituloKey`/`resumenKey`), resolved in the view with `#{__${p.tituloKey}__}`. Localized dates via `#temporals.format(..., #locale)`.
