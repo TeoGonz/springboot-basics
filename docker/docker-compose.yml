@@ -37,6 +37,17 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: bitacora-mailpit
+    environment:
+      MP_MAX_MESSAGES: 200
+    ports:
+      # 1025 = SMTP (lo usa el backend), 8025 = bandeja web para leer los correos.
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+    restart: unless-stopped
+
   backend:
     build:
       # Context = raíz del repo (ahí están pom.xml y src/), no esta carpeta.
@@ -47,12 +58,23 @@ services:
       postgres:
         # Espera a que el healthcheck pase, no solo a que el contenedor exista.
         condition: service_healthy
+      mailpit:
+        condition: service_started
     environment:
       # Sobreescriben los valores de application.properties. El host es
       # "postgres" (nombre del servicio en la red de compose), no localhost.
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/bitacora
       SPRING_DATASOURCE_USERNAME: bitacora
       SPRING_DATASOURCE_PASSWORD: bitacora
+      # SMTP de desarrollo: nada sale de la máquina.
+      MAIL_HOST: mailpit
+      MAIL_PORT: 1025
+      # El enlace del correo lo abre el navegador del usuario, así que apunta al
+      # front en el host, no a un nombre de servicio de la red de compose.
+      APP_FRONTEND_BASE_URL: ${APP_FRONTEND_BASE_URL:-http://localhost:3000}
+      # Secreto de firma del JWT. El de application.properties es solo para
+      # arrancar en local: aquí se sobreescribe, y en producción va en un secreto.
+      APP_JWT_SECRET: ${APP_JWT_SECRET:-clave-de-desarrollo-para-docker-cambiala-ya!!}
     ports:
       - "8080:8080"
     restart: unless-stopped
