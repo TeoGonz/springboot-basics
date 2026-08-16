@@ -105,22 +105,27 @@ springboot_java_project/
     │   │   ├── config/AsyncConfig.java       # @EnableAsync (used by the mail sender)
     │   │   ├── entity/User.java, entity/Role.java       # JPA user + role enum (users + user_roles)
     │   │   ├── entity/PasswordResetToken.java           # single-use reset link (SHA-256 hash stored)
+    │   │   ├── entity/Order.java, entity/OrderItem.java, entity/OrderStatus.java  # orders + frozen lines
     │   │   ├── repository/UserRepository.java           # findByUsername/findByEmail/existsBy…
     │   │   ├── repository/PasswordResetTokenRepository.java  # findByTokenHash, invalidateAllForUser
+    │   │   ├── repository/OrderRepository.java          # own orders, ownership lookup, admin lists
     │   │   ├── security/JwtService.java      # HS256 issue/parse; fails fast on a short secret
     │   │   ├── security/JwtAuthFilter.java   # Bearer header -> SecurityContext (runs on error dispatch)
     │   │   ├── security/RestAuthEntryPoint.java, RestAccessDeniedHandler.java  # 401/403 as JSON
     │   │   ├── service/JpaUserDetailsService.java   # UserDetailsService backed by Postgres
     │   │   ├── service/AuthService.java             # register + login (token issuing)
     │   │   ├── service/PasswordResetService.java    # reset token: create, hash, validate, consume
+    │   │   ├── service/OrderService.java            # create, list, ownership lookup, status change
     │   │   ├── service/MailService.java             # @Async plain-text mail via JavaMailSender
-    │   │   ├── dto/                          # records: Register/Login/Forgot/Reset requests, Auth/User/ApiError
+    │   │   ├── dto/                          # records: Register/Login/Forgot/Reset + Order requests, Auth/User/ApiError
     │   │   ├── web/ApiException.java, web/ApiExceptionHandler.java  # single error shape + codes
     │   │   ├── controller/AuthController.java  # /api/auth: register, login, forgot/reset password
-    │   │   └── controller/MeController.java    # GET /api/me -> username, enabled, roles
+    │   │   ├── controller/MeController.java    # GET /api/me -> username, enabled, roles
+    │   │   ├── controller/OrderController.java      # /api/orders: register and consult one's own
+    │   │   └── controller/AdminOrderController.java # /api/admin/orders: list all, move status
     │   └── resources/
     │       ├── application.properties        # datasource, JPA, JWT, mail, reset (env-overridable)
-    │       ├── messages/email*.properties    # es/en/pt text of the reset email (only i18n here)
+    │       ├── messages/email*.properties    # es/en/pt text of the reset and order emails (only i18n here)
     │       └── posts/                        # blog entries: <slug>.<locale>.md, the `es` one carries week/theme/date
     └── test/java/com/example/demo/
         └── DemoApplicationTests.java         # contextLoads smoke test
@@ -169,6 +174,7 @@ Stateless Spring REST API demonstrating role-based access control. Moving parts:
 - `service/PasswordResetService` — generates 32 random bytes, mails the base64url value and stores **only its SHA-256 hash**. Plain SHA-256 is enough here: unlike a password, the token is already 256 bits of entropy, so there is nothing to brute-force and BCrypt's deliberate cost buys nothing. Requesting a new link marks previous ones used. `service/MailService` sends plain text `@Async` (so response time does not reveal whether the address exists) and is the only place with translated strings.
 - `web/ApiExceptionHandler` — every error leaves as `{status, error, message[, fields]}`. `error` is a stable code (`BAD_CREDENTIALS`, `EMAIL_TAKEN`, `EXPIRED_TOKEN`…) that the front maps to its own translated text. Controllers throw `ApiException` and never shape responses.
 - `controller/MeController.java` — `GET /api/me`, the authenticated principal's `username`, `enabled` and `roles`. Never exposes the password hash.
+- **Orders** — `entity/Order` (`@Table(name = "orders")`, because `ORDER` is reserved in SQL), `entity/OrderItem` and `entity/OrderStatus`. `OrderController` registers and reads the caller's own; `AdminOrderController` is the first handler `/api/admin/**` has ever had. `service/OrderService` holds every rule: identity comes from the `Authentication` and never from the body, ownership is enforced **inside the query** (`findByIdAndUserId` → `404`, so ids cannot be probed), `total` is computed server-side from the lines, and status moves forward only — backwards *and same-value* are `409`, the second so a double-clicked form cannot mail the customer twice. Lines store a **copy** of the product (title, price, quantity, image), not a pointer: the catalogue is a public sandbox that gets rewritten, and an order is a historical record. Both mails are sent from the controller **after the transaction commits**, so no mail can describe an order that then rolls back, and a failed send only reaches the log. The unverified client-supplied `unitPrice` is a deliberate, documented trade-off — see `README.md`.
 - `docker/` — containerization. `Dockerfile` is multi-stage (Maven build → `eclipse-temurin:17-jre` runtime, non-root `spring` user); it **must** build with `-DskipTests` since `contextLoads` needs a live DB. `docker-compose.yml` runs `postgres:16` (named volume `pgdata`, `pg_isready` healthcheck), `mailpit` (SMTP 1025, inbox 8025) and `backend`, whose build `context` is the **repo root** (`..`) — that's why `.dockerignore` sits at the root. `depends_on: service_healthy` keeps the app from starting before the DB accepts connections; env vars point the datasource at host `postgres` and the mailer at `mailpit`.
 - **Mail transport is configuration, never code.** Every `spring.mail.*` value reads an env var whose default describes Mailpit, so a fresh clone boots and the whole recovery flow works with no account anywhere; `docker/.env` (gitignored, template in `docker/.env.example`) switches the same build to a real provider — Gmail needs `MAIL_SMTP_AUTH`/`MAIL_SMTP_STARTTLS` true on port 587, an **app password**, and `APP_MAIL_FROM` equal to `MAIL_USERNAME` because Gmail only sends as the authenticated account. Compose declares these as `${VAR:-<mailpit default>}`, so an absent `.env` changes nothing. Deliberately no Spring profile: env vars are already how this project expresses environment differences. SMTP timeouts are set because `forgot-password` needs no token and the send is `@Async` — a stalling server would otherwise pin threads on an anonymous request.
 

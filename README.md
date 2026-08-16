@@ -36,7 +36,7 @@ App en **http://localhost:8080**; bandeja de correo en **http://localhost:8025**
 En el primer arranque:
 
 - El backend espera a que Postgres pase su *healthcheck* antes de conectarse.
-- Hibernate crea las tablas `users`, `user_roles` y `password_reset_token` (`ddl-auto=update`).
+- Hibernate crea las tablas `users`, `user_roles`, `password_reset_token`, `orders` y `order_item` (`ddl-auto=update`).
 - `DataSeeder` siembra los usuarios de demo **si la tabla está vacía** (idempotente).
 
 Todos los comandos se ejecutan **desde la raíz del proyecto** (donde está `pom.xml`).
@@ -113,6 +113,11 @@ Inspeccionar la BD: `docker exec -it bitacora-postgres psql -U bitacora -d bitac
 | POST | `/api/auth/forgot-password` | público | `{email, locale?}` | 202, sin cuerpo |
 | POST | `/api/auth/reset-password` | público | `{token, password}` | 204 |
 | GET | `/api/me` | autenticado | — | `{username, enabled, roles}` |
+| POST | `/api/orders` | autenticado | `{items[], recipientName, address, phone, locale?}` | 201 + pedido completo |
+| GET | `/api/orders` | autenticado | — | pedidos propios, del más reciente al más antiguo |
+| GET | `/api/orders/{id}` | autenticado (dueño) | — | pedido completo con sus líneas |
+| GET | `/api/admin/orders` | `ROLE_ADMIN` | — | todos los pedidos; filtro opcional `?status=` |
+| PATCH | `/api/admin/orders/{id}/status` | `ROLE_ADMIN` | `{status}` | pedido completo, ya movido |
 | GET | `/api/posts` | público | — | ⏳ pendiente |
 
 Reglas de acceso: `/api/auth/**` es público (es lo que hay que poder llamar sin token), `/api/admin/**` exige `ROLE_ADMIN`, y todo lo demás requiere autenticación.
@@ -182,6 +187,40 @@ Tres detalles que hacen fallar el envío si se pasan por alto:
 
 Si el envío falla, el usuario ya recibió su 202 (por diseño), así que el motivo está solo en el log: `docker compose -f docker/docker-compose.yml logs backend | grep -i mail`. Un `MailAuthenticationException` es contraseña de aplicación incorrecta o dos pasos sin activar.
 
+### Pedidos
+
+Un pedido se registra a nombre de **quien manda el token**: `POST /api/orders` no lleva id de usuario y no lo llevará, porque un campo así permitiría comprar en nombre de otro. Nace en estado `PREPARING` y solo avanza: `PREPARING → SHIPPED → DELIVERED`, saltarse un paso vale, retroceder no. Repetir el estado actual también responde 409, y a propósito: un doble clic en el formulario del administrador mandaría, si no, un segundo correo diciendo lo mismo.
+
+```bash
+TOKEN=$(curl -s -X POST localhost:8080/api/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"user","password":"user123"}' | jq -r .accessToken)
+
+# registrar (el total lo calcula el servidor: 2×55 + 1×10)
+curl -s -X POST localhost:8080/api/orders -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{
+    "items":[{"productId":1,"title":"Classic Red Pullover Hoodie","unitPrice":55,"quantity":2},
+             {"productId":3,"title":"Sleek White & Blue Sneakers","unitPrice":10,"quantity":1}],
+    "recipientName":"Mateo","address":"Calle 1 #2-3","phone":"3000000000","locale":"es"}' | jq
+
+curl -s localhost:8080/api/orders -H "Authorization: Bearer $TOKEN" | jq   # los propios
+curl -s localhost:8080/api/orders/1 -H "Authorization: Bearer $TOKEN" | jq # uno, con líneas
+
+# administración
+ADMIN=$(curl -s -X POST localhost:8080/api/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"admin123"}' | jq -r .accessToken)
+curl -s 'localhost:8080/api/admin/orders?status=PREPARING' -H "Authorization: Bearer $ADMIN" | jq
+curl -s -X PATCH localhost:8080/api/admin/orders/1/status -H "Authorization: Bearer $ADMIN" \
+  -H 'Content-Type: application/json' -d '{"status":"SHIPPED"}' | jq .status
+```
+
+El pedido de otra persona responde **404, no 403**. Es deliberado: si lo ajeno diera 403 y lo inexistente 404, las dos respuestas juntas dirían qué identificadores son reales.
+
+Cada línea guarda una **copia** del producto — título, precio, cantidad e imagen — y no solo su `productId`. El catálogo es un sandbox público que cualquiera reescribe: los productos se borran, se renombran y cambian de precio. Un pedido es un registro histórico, así que releer el catálogo al mostrarlo dejaría el recibo ilegible o, peor, reescribiría lo que el cliente pagó.
+
+Registrar un pedido y cambiarle el estado mandan un correo al cliente, en el idioma en que se hizo el pedido (`locale`). El envío es asíncrono y va **después** de que la transacción confirme: un correo no puede describir un pedido que luego se deshace, y un correo que no sale no deshace un pedido ya guardado — solo deja el fallo en el log.
+
+> **Limitación conocida: el precio lo pone quien llama.** Esta API no habla con el catálogo, así que cree el `unitPrice` que recibe. Con un token válido se puede registrar un pedido de un producto de $1000 a $0.01. Se aceptó a cambio de disponibilidad: verificar precios exigiría llamar en cada compra a un servicio de terceros que duerme y responde en segundos, y un tercero dormido significaría **no poder pedir**. Dos cosas lo acotan y ninguna lo cierra: el único cliente real es el servidor de Next (el navegador nunca llama a esta API, por eso tampoco hay CORS), y el `total` **se calcula aquí** desde las líneas, así que el recibo al menos es coherente consigo mismo. Cerrarlo de verdad pide un cliente del catálogo con caché y plan B.
+
 ### Errores
 
 Todos comparten la misma forma, con un código estable pensado para que el front elija el texto traducido:
@@ -204,7 +243,10 @@ Todos comparten la misma forma, con un código estable pensado para que el front
 | `BAD_CREDENTIALS` | 401 | usuario o contraseña incorrectos |
 | `UNAUTHENTICATED` | 401 | falta el token, o no vale |
 | `FORBIDDEN` | 403 | autenticado, pero sin el rol necesario |
+| `EMPTY_CART` | 400 | el pedido se queda sin líneas |
+| `ORDER_NOT_FOUND` | 404 | pedido inexistente, **o de otra persona** |
 | `USERNAME_TAKEN` / `EMAIL_TAKEN` | 409 | el usuario o el correo ya existen |
+| `INVALID_STATUS_TRANSITION` | 409 | el estado retrocede o se repite |
 
 ## Comandos
 
@@ -266,9 +308,10 @@ Vive en el repositorio hermano **`front-react-project/`** (Next.js 16 + Tailwind
 ## Estructura y hoja de ruta
 
 - Código y arquitectura: ver [`CLAUDE.md`](./CLAUDE.md).
-- **Estado actual:** API stateless con JWT, alta de usuarios y recuperación de contraseña por correo, sobre Postgres, todo dockerizado.
+- **Estado actual:** API stateless con JWT, alta de usuarios, recuperación de contraseña por correo y módulo de pedidos con seguimiento de estado, sobre Postgres, todo dockerizado.
 - **Siguientes pasos:**
   1. `GET /api/posts` para que la bitácora del front deje de ser estática.
-  2. Endpoints bajo `/api/admin/**` para la zona de administración.
-  3. Perfil de test (H2 o Testcontainers) para que `./mvnw test` no dependa de un Postgres externo.
-  4. Revocación de tokens (lista negra o refresh token corto) si hace falta cerrar sesión de verdad.
+  2. Cliente del catálogo con caché, para dejar de creerle el precio a quien pide.
+  3. Paginación en `/api/admin/orders`, cuando la lista deje de caber de una vez.
+  4. Perfil de test (H2 o Testcontainers) para que `./mvnw test` no dependa de un Postgres externo.
+  5. Revocación de tokens (lista negra o refresh token corto) si hace falta cerrar sesión de verdad.
