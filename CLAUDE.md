@@ -110,21 +110,22 @@ springboot_java_project/
     │   │   ├── repository/PasswordResetTokenRepository.java  # findByTokenHash, invalidateAllForUser
     │   │   ├── repository/OrderRepository.java          # own orders, ownership lookup, admin lists
     │   │   ├── security/JwtService.java      # HS256 issue/parse; fails fast on a short secret
-    │   │   ├── security/JwtAuthFilter.java   # Bearer header -> SecurityContext (runs on error dispatch)
+    │   │   ├── security/JwtAuthFilter.java   # Bearer header -> SecurityContext (runs on error + async dispatch)
     │   │   ├── security/RestAuthEntryPoint.java, RestAccessDeniedHandler.java  # 401/403 as JSON
     │   │   ├── service/JpaUserDetailsService.java   # UserDetailsService backed by Postgres
     │   │   ├── service/AuthService.java             # register + login (token issuing)
     │   │   ├── service/PasswordResetService.java    # reset token: create, hash, validate, consume
     │   │   ├── service/OrderService.java            # create, list, ownership lookup, status change
+    │   │   ├── service/OrderStatusPublisher.java    # Sinks.Many fan-out of status changes (SSE)
     │   │   ├── service/MailService.java             # @Async plain-text mail via JavaMailSender
-    │   │   ├── dto/                          # records: Register/Login/Forgot/Reset + Order requests, Auth/User/ApiError
+    │   │   ├── dto/                          # records: Register/Login/Forgot/Reset + Order requests, Auth/User/ApiError, OrderStatusEvent
     │   │   ├── web/ApiException.java, web/ApiExceptionHandler.java  # single error shape + codes
     │   │   ├── controller/AuthController.java  # /api/auth: register, login, forgot/reset password
     │   │   ├── controller/MeController.java    # GET /api/me -> username, enabled, roles
-    │   │   ├── controller/OrderController.java      # /api/orders: register and consult one's own
+    │   │   ├── controller/OrderController.java      # /api/orders: register, consult and stream one's own (SSE)
     │   │   └── controller/AdminOrderController.java # /api/admin/orders: list all, move status
     │   └── resources/
-    │       ├── application.properties        # datasource, JPA, JWT, mail, reset (env-overridable)
+    │       ├── application.properties        # datasource, JPA, JWT, mail, reset, SSE (env-overridable)
     │       ├── messages/email*.properties    # es/en/pt text of the reset and order emails (only i18n here)
     │       └── posts/                        # blog entries: <slug>.<locale>.md, the `es` one carries week/theme/date
     └── test/java/com/example/demo/
@@ -160,6 +161,8 @@ TOKEN=$(curl -s -X POST localhost:8080/api/auth/login -H 'Content-Type: applicat
 curl -s localhost:8080/api/me -H "Authorization: Bearer $TOKEN"   # 200, ROLE_ADMIN + ROLE_USER
 curl -s -X POST localhost:8080/api/auth/forgot-password -H 'Content-Type: application/json' \
   -d '{"email":"user@bitacora.local","locale":"es"}'              # 202, mail lands in Mailpit
+# live tracking: leave this open and PATCH the status from another terminal
+curl -N localhost:8080/api/orders/1/stream -H "Authorization: Bearer $TOKEN"
 ```
 
 No linter configured. Java 17, Spring Boot 4.1.0. Only test is `DemoApplicationTests.contextLoads` (smoke test, no assertions). It boots the full context, so **`./mvnw test` needs a live Postgres**; builds without a DB use `./mvnw package -DskipTests`.
@@ -175,6 +178,7 @@ Stateless Spring REST API demonstrating role-based access control. Moving parts:
 - `web/ApiExceptionHandler` — every error leaves as `{status, error, message[, fields]}`. `error` is a stable code (`BAD_CREDENTIALS`, `EMAIL_TAKEN`, `EXPIRED_TOKEN`…) that the front maps to its own translated text. Controllers throw `ApiException` and never shape responses.
 - `controller/MeController.java` — `GET /api/me`, the authenticated principal's `username`, `enabled` and `roles`. Never exposes the password hash.
 - **Orders** — `entity/Order` (`@Table(name = "orders")`, because `ORDER` is reserved in SQL), `entity/OrderItem` and `entity/OrderStatus`. `OrderController` registers and reads the caller's own; `AdminOrderController` is the first handler `/api/admin/**` has ever had. `service/OrderService` holds every rule: identity comes from the `Authentication` and never from the body, ownership is enforced **inside the query** (`findByIdAndUserId` → `404`, so ids cannot be probed), `total` is computed server-side from the lines, and status moves forward only — backwards *and same-value* are `409`, the second so a double-clicked form cannot mail the customer twice. Lines store a **copy** of the product (title, price, quantity, image), not a pointer: the catalogue is a public sandbox that gets rewritten, and an order is a historical record. Both mails are sent from the controller **after the transaction commits**, so no mail can describe an order that then rolls back, and a failed send only reaches the log. The unverified client-supplied `unitPrice` is a deliberate, documented trade-off — see `README.md`.
+- **Live order tracking (SSE)** — `GET /api/orders/{id}/stream` returns `Flux<ServerSentEvent<OrderStatusEvent>>` and keeps the connection open. **This is not WebFlux**: the stack is Servlet, and Spring MVC's `ReactiveTypeHandler` adapts the `Flux` to an async response — the only new dependency is `reactor-core`. `AdminOrderController` publishes to `service/OrderStatusPublisher` right next to the mail, **after the transaction commits**, for the same reason: a screen that already moved cannot be taken back. The sink is `multicast().directBestEffort()` — the buffering variant would replay an *older* status to a fresh subscriber — and `publish` is `synchronized` so two admins cannot hit `FAIL_NON_SERIALIZED`; `FAIL_ZERO_SUBSCRIBER` is the normal case and only logs at debug. Ownership is checked **before** the `Flux` is built, because once `200 text/event-stream` is written `ApiExceptionHandler` can no longer shape a `404`; that check also yields the first event, the current status, so a reconnection is never blank or stale. `DELIVERED` completes the stream, a `:keep-alive` comment goes out on the interval, and `take(Duration)` caps it so the container never aborts with `AsyncRequestTimeoutException`. Because the response completes on an **`ASYNC` dispatch**, `JwtAuthFilter` also overrides `shouldNotFilterAsyncDispatch()` — otherwise that second pass arrives anonymous and every closed stream logs `Access Denied` over an already-committed response. The sink lives in memory: one instance only.
 - `docker/` — containerization. `Dockerfile` is multi-stage (Maven build → `eclipse-temurin:17-jre` runtime, non-root `spring` user); it **must** build with `-DskipTests` since `contextLoads` needs a live DB. `docker-compose.yml` runs `postgres:16` (named volume `pgdata`, `pg_isready` healthcheck), `mailpit` (SMTP 1025, inbox 8025) and `backend`, whose build `context` is the **repo root** (`..`) — that's why `.dockerignore` sits at the root. `depends_on: service_healthy` keeps the app from starting before the DB accepts connections; env vars point the datasource at host `postgres` and the mailer at `mailpit`.
 - **Mail transport is configuration, never code.** Every `spring.mail.*` value reads an env var whose default describes Mailpit, so a fresh clone boots and the whole recovery flow works with no account anywhere; `docker/.env` (gitignored, template in `docker/.env.example`) switches the same build to a real provider — Gmail needs `MAIL_SMTP_AUTH`/`MAIL_SMTP_STARTTLS` true on port 587, an **app password**, and `APP_MAIL_FROM` equal to `MAIL_USERNAME` because Gmail only sends as the authenticated account. Compose declares these as `${VAR:-<mailpit default>}`, so an absent `.env` changes nothing. Deliberately no Spring profile: env vars are already how this project expresses environment differences. SMTP timeouts are set because `forgot-password` needs no token and the send is `@Async` — a stalling server would otherwise pin threads on an anonymous request.
 

@@ -84,4 +84,17 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     protected boolean shouldNotFilterErrorDispatch() {
         return false;
     }
+
+    /**
+     * Lo mismo con el reenvío ASYNC. Cuando termina una respuesta asíncrona —el
+     * SSE de seguimiento del pedido— el contenedor vuelve a pasar la petición por
+     * la cadena, y saltándose este filtro esa pasada llega anónima: Security la
+     * deniega y deja dos trazas de error por cada stream que se cierra, aunque el
+     * cliente ya haya recibido todo. La cabecera sigue en la petición, así que
+     * autenticar de nuevo es leerla otra vez.
+     */
+    @Override
+    protected boolean shouldNotFilterAsyncDispatch() {
+        return false;
+    }
 }

@@ -12,6 +12,7 @@
 |---|---|
 | Lenguaje / build | Java 17, Maven (wrapper `./mvnw`) |
 | Framework | Spring Boot 4.1.0 (Web MVC, Security 7, Data JPA, Validation, Mail) |
+| Tiempo real | SSE sobre Web MVC con tipos reactivos (Reactor) — ver [Seguimiento en vivo](#seguimiento-en-vivo-sse) |
 | Base de datos | PostgreSQL 16 |
 | Auth | JWT stateless (HS256, `Authorization: Bearer …`) |
 | Correo | SMTP; en desarrollo **Mailpit** (bandeja web en `:8025`) |
@@ -116,6 +117,7 @@ Inspeccionar la BD: `docker exec -it bitacora-postgres psql -U bitacora -d bitac
 | POST | `/api/orders` | autenticado | `{items[], recipientName, address, phone, locale?}` | 201 + pedido completo |
 | GET | `/api/orders` | autenticado | — | pedidos propios, del más reciente al más antiguo |
 | GET | `/api/orders/{id}` | autenticado (dueño) | — | pedido completo con sus líneas |
+| GET | `/api/orders/{id}/stream` | autenticado (dueño) | — | `text/event-stream`: estado actual y cada cambio, en vivo |
 | GET | `/api/admin/orders` | `ROLE_ADMIN` | — | todos los pedidos; filtro opcional `?status=` |
 | PATCH | `/api/admin/orders/{id}/status` | `ROLE_ADMIN` | `{status}` | pedido completo, ya movido |
 | GET | `/api/posts` | público | — | ⏳ pendiente |
@@ -219,6 +221,42 @@ Cada línea guarda una **copia** del producto — título, precio, cantidad e im
 
 Registrar un pedido y cambiarle el estado mandan un correo al cliente, en el idioma en que se hizo el pedido (`locale`). El envío es asíncrono y va **después** de que la transacción confirme: un correo no puede describir un pedido que luego se deshace, y un correo que no sale no deshace un pedido ya guardado — solo deja el fallo en el log.
 
+#### Seguimiento en vivo (SSE)
+
+`GET /api/orders/{id}/stream` deja la conexión abierta y manda cada cambio de estado en cuanto el administrador lo hace. No hay que volver a preguntar ni recargar.
+
+```bash
+# terminal A — el cliente se queda escuchando su pedido
+curl -N localhost:8080/api/orders/1/stream -H "Authorization: Bearer $TOKEN"
+
+# terminal B — el administrador lo mueve
+curl -s -X PATCH localhost:8080/api/admin/orders/1/status -H "Authorization: Bearer $ADMIN" \
+  -H 'Content-Type: application/json' -d '{"status":"SHIPPED"}' | jq .status
+```
+
+En la terminal A:
+
+```
+event:status
+data:{"orderId":1,"status":"PREPARING","at":"..."}   ← al conectar: el estado actual
+
+:keep-alive                                          ← cada 25 s, mientras no pase nada
+
+event:status
+data:{"orderId":1,"status":"SHIPPED","at":"..."}     ← en el instante en que B ejecuta
+```
+
+Cómo se comporta:
+
+- **El primer evento es siempre el estado actual**, así que reconectar nunca deja la pantalla en blanco ni desfasada. La conexión se corta sola a los 15 minutos y el navegador vuelve a abrirla; el usuario no lo nota.
+- **`DELIVERED` cierra el stream**: es terminal, no queda nada que contar.
+- **El pedido de otro sigue respondiendo 404**, con el mismo JSON de siempre. La propiedad se comprueba **antes** de empezar a emitir: una vez escrita la cabecera `200 text/event-stream` ya no se puede devolver un error normal.
+- El `:keep-alive` no es decorativo: impide que un proxy corte una conexión inactiva y detecta al cliente que desapareció sin cerrar.
+
+> **Esto no es WebFlux.** El stack sigue siendo Servlet (Web MVC) y todos los demás endpoints siguen siendo bloqueantes. Lo que hay es **Spring MVC sirviendo un tipo reactivo**: MVC sabe adaptar un `Flux` a una respuesta asíncrona, y el hilo de petición se libera en cuanto la petición pasa a async, así que un stream abierto no ocupa ninguno — que es la propiedad por la que WebFlux es conocido. La única dependencia añadida es `reactor-core`, no el starter de WebFlux: ese sí cambia el stack entero y obligaría a reescribir seguridad, datos y los cuatro controladores.
+
+> **Limitación conocida: una sola instancia.** El reparto de eventos vive en memoria. Con dos réplicas del backend, un cliente conectado a la B no vería un cambio hecho a través de la A. Cerrarlo pide `LISTEN/NOTIFY` de Postgres o un broker; este proyecto corre un contenedor. En el mismo saco: un reinicio corta los streams abiertos (el navegador reconecta y repinta la verdad), y nada limita cuántos abre un mismo token.
+
 > **Limitación conocida: el precio lo pone quien llama.** Esta API no habla con el catálogo, así que cree el `unitPrice` que recibe. Con un token válido se puede registrar un pedido de un producto de $1000 a $0.01. Se aceptó a cambio de disponibilidad: verificar precios exigiría llamar en cada compra a un servicio de terceros que duerme y responde en segundos, y un tercero dormido significaría **no poder pedir**. Dos cosas lo acotan y ninguna lo cierra: el único cliente real es el servidor de Next (el navegador nunca llama a esta API, por eso tampoco hay CORS), y el `total` **se calcula aquí** desde las líneas, así que el recibo al menos es coherente consigo mismo. Cerrarlo de verdad pide un cliente del catálogo con caché y plan B.
 
 ### Errores
@@ -285,6 +323,8 @@ Valores por defecto en `src/main/resources/application.properties`, sobreescribi
 | `MAIL_SMTP_AUTH` | `false` | `true` con un servidor real |
 | `MAIL_SMTP_STARTTLS` | `false` | `true` con un servidor real (Gmail: puerto 587) |
 | `MAILPIT_UI_PORT` | `8025` | Puerto del host para la bandeja web (solo Compose) |
+| `APP_ORDERS_STREAM_MAX_DURATION_MS` | `900000` | Duración máxima de un stream de seguimiento (15 min) |
+| `APP_ORDERS_STREAM_HEARTBEAT_MS` | `25000` | Cada cuánto se manda el `:keep-alive` |
 
 Dentro de Compose el host de la BD es `postgres` y el del correo `mailpit` (nombres de servicio), no `localhost`; el `docker-compose.yml` ya inyecta esas variables.
 
@@ -308,7 +348,7 @@ Vive en el repositorio hermano **`front-react-project/`** (Next.js 16 + Tailwind
 ## Estructura y hoja de ruta
 
 - Código y arquitectura: ver [`CLAUDE.md`](./CLAUDE.md).
-- **Estado actual:** API stateless con JWT, alta de usuarios, recuperación de contraseña por correo y módulo de pedidos con seguimiento de estado, sobre Postgres, todo dockerizado.
+- **Estado actual:** API stateless con JWT, alta de usuarios, recuperación de contraseña por correo y módulo de pedidos con seguimiento de estado **en vivo por SSE**, sobre Postgres, todo dockerizado.
 - **Siguientes pasos:**
   1. `GET /api/posts` para que la bitácora del front deje de ser estática.
   2. Cliente del catálogo con caché, para dejar de creerle el precio a quien pide.

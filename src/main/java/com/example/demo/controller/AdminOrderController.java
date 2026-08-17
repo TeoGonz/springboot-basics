@@ -19,6 +19,7 @@ import com.example.demo.entity.OrderStatus;
 import com.example.demo.service.MailService;
 import com.example.demo.service.OrderService;
 import com.example.demo.service.OrderService.OrderResult;
+import com.example.demo.service.OrderStatusPublisher;
 import com.example.demo.web.ApiException;
 
 import jakarta.validation.Valid;
@@ -36,10 +37,13 @@ public class AdminOrderController {
 
     private final OrderService orderService;
     private final MailService mailService;
+    private final OrderStatusPublisher statusPublisher;
 
-    public AdminOrderController(OrderService orderService, MailService mailService) {
+    public AdminOrderController(OrderService orderService, MailService mailService,
+            OrderStatusPublisher statusPublisher) {
         this.orderService = orderService;
         this.mailService = mailService;
+        this.statusPublisher = statusPublisher;
     }
 
     @GetMapping
@@ -52,9 +56,13 @@ public class AdminOrderController {
             @Valid @RequestBody UpdateOrderStatusRequest request) {
         OrderResult result = orderService.changeStatus(id, request.status());
 
-        // Igual que en el alta: la transacción ya confirmó cuando se avisa.
+        // Igual que en el alta: la transacción ya confirmó cuando se avisa. Vale
+        // para el correo y vale para el evento — una pantalla que ya se movió no
+        // se puede echar atrás.
         mailService.sendOrderStatusChanged(result.email(), result.username(), result.order().id(),
                 result.order().status(), result.locale());
+        statusPublisher.publish(result.order().id(), result.order().status(),
+                result.order().updatedAt());
 
         return result.order();
     }

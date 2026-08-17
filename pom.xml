@@ -80,6 +80,16 @@
 			<artifactId>spring-boot-starter-mail</artifactId>
 		</dependency>
 
+		<!-- Tipos reactivos para el SSE de seguimiento (spec backend 08).
+		     Solo reactor-core, NO spring-boot-starter-webflux: el starter cambia
+		     el stack web entero y obligaría a reescribir seguridad y datos. Spring
+		     MVC ya sabe servir un Flux como respuesta asíncrona; lo único que le
+		     falta es Reactor en el classpath. -->
+		<dependency>
+			<groupId>io.projectreactor</groupId>
+			<artifactId>reactor-core</artifactId>
+		</dependency>
+
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-security-test</artifactId>
